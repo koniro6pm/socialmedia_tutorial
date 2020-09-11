@@ -1,0 +1,431 @@
+---
+title: "Text classification"
+author: "Yun-hui Chen"
+output: html_notebook
+---
+
+> 將"是否為Jane作品"當作資料集的label，訓練模型來判斷哪些段落是哪個作者寫的，為二元分類問題
+
+```{r}
+packages = c("dplyr","tidytext","tidyverse","ggplot2", "tidyr","gutenbergr","glmnet","broom","rsample","caTools","caret","rpart","rpart.plot","e1071","textstem")
+existing = as.character(installed.packages()[,1])
+for(pkg in packages[!(packages %in% existing)]) install.packages(pkg)
+
+library(dplyr)
+library(tidytext)
+library(ggplot2)
+library(tidyr)
+library(gutenbergr)
+library(caTools)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(tm)
+library(e1071)
+library(textstem)
+```
+
+```{r}
+load("classification.RData")
+```
+
+
+# 資料下載
+
+> 下載Jane austen的"pride and prejudice"與H. G. Wells的"the war of the worlds"兩本書。將每個句子當作一個document
+
+```{r}
+
+books <- gutenberg_works(title %in% c("The War of the Worlds","Pride and Prejudice")) %>%
+  gutenberg_download(meta_fields = "title") %>%
+  mutate(document = row_number())
+
+books
+
+```
+
+```{r}
+table(books$title)
+```
+
+
+# 資料前處理 
+
+> 進行斷詞、去除stopwords，並篩選出現太少次的字
+
+```{r}
+
+tidy_books <- books %>%
+  unnest_tokens(word, text) %>%
+  group_by(word) %>%
+  anti_join(stop_words) %>% 
+  filter(n() > 10) %>% #只取出出現大於10次的字
+  ungroup()
+
+tidy_books
+```
+
+```{r}
+length(unique(tidy_books$word))
+```
+
+
+```{r}
+tidy_books$lemma = lemmatize_words(tidy_books$word)
+
+head(tidy_books)
+```
+
+```{r}
+length(unique(tidy_books$word)) - length(unique(tidy_books$lemma))
+```
+減少了226個字
+
+> 在text classification問題上，對文字做去除stopwords、詞型還原(lemmatization)是一種feature selection的方式
+
+
+查看兩本書的常用字
+```{r}
+
+tidy_books %>%
+  count(title, lemma, sort = TRUE) %>%
+  group_by(title) %>%
+  top_n(20) %>%
+  ungroup() %>%
+  ggplot(aes(x=reorder(lemma,n),y=n,fill = title)) +
+  geom_col(alpha = 0.8, show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~title, scales = "free") +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(
+    x = NULL, y = "Word count",
+    title = "Most frequent words after removing stop words"
+  )
+```
+兩本書的常用字很不一樣
+
+
+## 轉成document term matrix
+
+```{r}
+
+dtm = tidy_books %>% 
+      count(document,lemma) %>% 
+      cast_dtm(document,lemma,n)
+
+inspect(dtm[1:10,1:10])
+```
+
+
+```{r}
+dim(dtm) #14765個document 出現1008個不同的lemma
+```
+
+
+為dtm新增target欄位: is_jane 作者是否為jane (書是否為Pride and Prejudice)
+
+
+```{r}
+jane = unique(tidy_books$document[which(tidy_books$title == "Pride and Prejudice")])
+```
+
+```{r}
+dtm = as.data.frame(as.matrix(dtm)) 
+```
+
+```{r}
+dtm$is_jane = as.integer(rownames(dtm)) %in% jane
+dtm$is_jane = as.factor(ifelse(dtm$is_jane,1,0)) #是jane為1,不是為0
+```
+
+```{r}
+table(dtm$is_jane)
+```
+
+
+# Model building
+
+> 將資料分成訓練集與測試集
+
+```{r}
+set.seed(123)
+spl = sample.split(dtm$is_jane, 0.7) #在保留is_jane比例的狀況下以7:3將原始資料分割成訓練集與測試集
+TR = subset(dtm, spl == TRUE)
+TS = subset(dtm, spl == FALSE)
+
+```
+
+查看是否保留is_jane比例
+```{r}
+sum(dtm$is_jane == 1)/nrow(dtm)
+sum(TR$is_jane == 1)/nrow(TR)
+sum(TS$is_jane == 1)/nrow(TS)
+```
+
+
+### Model building : logistic regression
+
+```{r}
+# t0 = Sys.time()
+# ## cost about 4 mins
+# glm = glm(is_jane~.,TR,family = "binomial") # 以is_jane作為y,其他欄位都當作x
+# Sys.time() - t0
+# # 3.978 mins
+
+```
+
+
+```{r}
+glm.pred = predict(glm,TS,type="response") #返回為is_jane為1的機率
+```
+
+confusion matrix
+```{r}
+cm = table(actual = TS$is_jane , pred = glm.pred >= 0.5);cm
+```
+
+sensitivity : 在實際為1的資料中，預測多少為1 
+```{r}
+sen  = 2731/(234+2731);sen # TP/(TP+FN) 0.9217538
+```
+
+specificity: 在實際為0的資料中，預測多少為0
+```{r}
+spec = 1212/(252+1212);spec # TN/(TN+FP) 
+```
+
+> H.G WELLS的段落較容易被誤判
+
+accuracy: 所有資料中有多少比例預測正確
+```{r}
+acc = sum(diag(cm))/sum(cm);acc # (TP+TN)/(TP+TN+FP+FN)
+```
+
+confusionMatrix(predict value,actual value)
+```{r}
+confusionMatrix(factor(ifelse(glm.pred >= 0.5,1,0)),factor(TS$is_jane),positive = "1")
+```
+
+
+ROC curve and AUC
+
+> 
+
+```{r}
+colAUC(glm.pred,TS$is_jane,T)
+```
+
+
+### 各特徵的estimate係數
+
+> 哪些特徵（詞）對於判斷分類影響很大？
+
+```{r}
+glm.summary = summary(glm)
+```
+
+```{r}
+coef = as.data.frame(glm.summary$coefficients)
+coef$term = row.names(coef)
+```
+
+> coefficient estimate代表特徵每增加一單位，y是1的發生機率比y是0的發生機率多幾倍（odds ratio 勝算比）
+
+```{r}
+head(coef)
+```
+
+```{r}
+
+coef %>%
+  group_by(Estimate > 0) %>% # group_by兩類：Estimate > 0 或 Estimate <= 0
+  top_n(10, abs(Estimate)) %>% #abs:絕對值
+  ungroup() %>%
+  ggplot(aes(reorder(term, Estimate), Estimate, fill = Estimate > 0)) +
+  geom_col(alpha = 0.8, show.legend = FALSE) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    title = "Coefficients that increase/decrease odds ratio of is_jane the most"
+  )
+
+```
+
+> elizabeth,favor,feeling等字是影響判斷為Jane的重要字，chobham(hobham Armour 喬巴姆裝甲),maybury,shoot等字是影響判斷不是Jane的重要字
+
+### 查看分類錯誤的句子
+
+先確認在TS中的document id 順序與p.glm是一樣的
+```{r}
+identical(row.names(TS),names(glm.pred))
+```
+
+實際為傲慢與偏見，卻被判斷成世界大戰(False negative)
+```{r}
+
+books %>% 
+  filter(document %in% as.integer(row.names(TS))) %>%
+  mutate(pred = glm.pred) %>% #因為確認了TS和pred中的document次序是相同的  所以可以直接mutate 
+  filter(pred < 0.5,title == "Pride and Prejudice") %>% 
+  top_n(-10,pred) #top_n(負數,col) 代表要根據col取最小的前
+
+
+```
+
+
+
+實際為世界大戰，卻被判斷成傲慢與偏見(False positive)
+```{r}
+
+books %>% 
+  filter(document %in% as.integer(row.names(TS))) %>%
+  mutate(pred = glm.pred) %>% 
+  filter(pred >= 0.5,title == "The War of the Worlds") %>% 
+  top_n(10,pred)
+
+
+```
+
+
+## TF-IDF
+
+> 將每個段落視為一個document來計算字詞的TF-IDF
+
+```{r}
+document_words <- tidy_books %>% #計算每個document裡不同的字的tf
+                  count(document, lemma, sort = TRUE)
+
+total_words <- document_words %>% 
+                group_by(document) %>% 
+                summarize(total = sum(n)) %>% 
+                right_join(document_words) %>% 
+                mutate(is_jane = document %in% jane)
+
+```
+
+```{r}
+total_words = total_words %>% 
+              bind_tf_idf(lemma,document,n)
+```
+
+
+
+將TF-ITF 轉為dtm的值
+```{r}
+dtm.tfidf = total_words %>% cast_dtm(document,lemma,tf_idf)
+dim(dtm.tfidf)
+```
+
+```{r}
+inspect(dtm.tfidf[1:10,1:10])
+```
+
+
+> 使用dtm.tfidf作為input來訓練model
+
+```{r}
+dtm.tfidf = as.data.frame(as.matrix(dtm.tfidf))
+```
+
+```{r}
+dtm.tfidf$is_jane = as.integer(rownames(dtm.tfidf)) %in% jane
+dtm.tfidf$is_jane = as.factor(ifelse(dtm.tfidf$is_jane,1,0))
+```
+
+
+```{r}
+set.seed(123)
+spl = sample.split(dtm.tfidf$is_jane, 0.7) 
+TR.tfidf = subset(dtm.tfidf, spl == TRUE)
+TS.tfidf = subset(dtm.tfidf, spl == FALSE)
+
+```
+
+## logistic regression using dtm(weighting :tfidf)
+
+```{r}
+# t0 = Sys.time()
+# glm.tfidf = glm(is_jane~.,TR.tfidf,family = "binomial")
+# Sys.time() - t0
+# # 3.978 mins
+
+```
+
+
+```{r}
+glm.tfidf.pred = predict(glm.tfidf,TS.tfidf,type="response") #返回為is_jane為1的機率
+```
+
+```{r}
+confusionMatrix(factor(ifelse(glm.tfidf.pred >= 0.5,1,0)),factor(TS.tfidf$is_jane),positive="1")
+```
+
+
+## Model Building : SVM
+
+
+### 以 dtm 為input
+
+```{r}
+svm.fit = svm(is_jane~.,TR,kernel = "linear",cost = 10,scale = F)
+p.svm = pred = predict(svm.fit,TS)
+
+```
+
+```{r}
+confusionMatrix(p.svm,TS$is_jane,dnn = c("Prediction","Reference"),positive = "1")
+```
+
+### 以dtm.tfidf為input
+
+```{r}
+svm.fit.tfidf = svm(is_jane~.,TR.tfidf,kernel = "linear",cost = 10,scale = F)
+p.svm.tfidf = pred = predict(svm.fit.tfidf,TS.tfidf)
+
+```
+
+```{r}
+confusionMatrix(p.svm.tfidf,TS$is_jane,dnn = c("Prediction","Reference"),positive = "1")
+```
+
+## Model Building : Decision tree
+
+
+```{r}
+t0 = Sys.time()
+rp = rpart(is_jane~.,TR,method = "class")
+Sys.time() - t0
+# 33.43934 secs
+```
+
+
+決策樹視覺化
+```{r}
+prp(rp)
+```
+
+```{r}
+p.rp = pred = predict(rp,TS)[,2] #predict(rp,TS) 會返回2種probability : 是0的機率,是1的機率 , 我們只取出 是1的機率
+```
+
+
+```{r}
+confusionMatrix(factor(ifelse(pred >= 0.5,1,0)),factor(TS$is_jane),positive = "1")
+```
+
+> 在高維度資料上，特別是本次的document term，很難有一個特徵是可以決定區分兩個類別的，使決策樹的表現並不是很好。但決策樹的好處是易於解釋。
+
+
+
+### 比較多個模型預測結果的ROC
+
+```{r}
+colAUC(cbind(glm = p.glm,glm.tfidf = p.glm.tfidf , svm = p.svm , rpart = p.rp), TS$is_jane, T)
+```
+
+
+
+```{r}
+save.image("classification.RData")
+```
+

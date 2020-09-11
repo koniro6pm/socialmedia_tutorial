@@ -1,0 +1,44 @@
+
+p,li,title,body,h1,h2,h3,h4,h5{
+  font-family: "Trebuchet MS", "微軟正黑體", "Microsoft JhengHei";
+}
+
+code{
+  font-family: "Consolas", "Trebuchet MS", "微軟正黑體", "Microsoft JhengHei";
+}
+
+label {
+  font-family: "Trebuchet MS", "微軟正黑體", "Microsoft JhengHei";
+  font-weight: normal; }
+  
+h6 {
+  font-family: "Trebuchet MS", "微軟正黑體", "Microsoft JhengHei";
+  font-weight: normal;
+  font-size: 14px;
+  color: #b30000; }
+
+.qiz {
+  line-height: 1.75;
+  background: #f0f0f0;
+  border-left: 12px solid #cce6ff;
+  padding: 4px;
+  padding-left: 10px;
+}
+
+.wwl {
+  line-height: 1.75;
+  background: #f0f0f0;
+  border-left: 12px solid #ffeb99;
+  padding: 4px;
+  padding-left: 10px;
+}
+
+.shiny-input-panel {
+  padding: 6px 8px;
+  margin-top: 6px;
+  margin-bottom: 6px;
+  background-color: #f5f5f5;
+  border: 1px solid #e3e3e3;
+  border-radius: 2px;
+  font-family: "微軟正黑體", "Microsoft JhengHei", "Trebuchet MS";
+}
