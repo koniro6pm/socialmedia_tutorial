@@ -1,0 +1,475 @@
+---
+title: "使用情緒字典針對PTT nCov2019版做情緒分析"
+author: "陳韻卉"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+# 系統參數設定
+```{r}
+Sys.setlocale(category = "LC_ALL", locale = "zh_TW.UTF-8") # 避免中文亂碼
+```
+
+## 安裝需要的packages
+```{r}
+packages = c("dplyr", "tidytext", "stringr", "wordcloud2", "ggplot2",'readr','data.table','reshape2','wordcloud','tidyr','scales')
+existing = as.character(installed.packages()[,1])
+for(pkg in packages[!(packages %in% existing)]) install.packages(pkg)
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidytext)
+library(wordcloud2)
+library(data.table)
+library(ggplot2)
+library(reshape2)
+library(wordcloud)
+library(tidyr)
+library(readr)
+library(scales)
+```
+
+
+
+## 資料來源: 文字平台收集PTT nCoV2019版2020-01-25 ~ 2020-03-20 所有文章
+資料集: corona_artWordFreq.csv
+
+```{r}
+data = fread('../data/corona_artWordFreq.csv',encoding = 'UTF-8')
+```
+
+查看資料前幾筆(已經整理成文章-詞彙-詞頻)
+```{r}
+head(data)
+```
+
+過濾特殊字元
+```{r}
+data = data %>% 
+  filter(!grepl('_',word))
+```
+
+
+轉換日期格式
+```{r}
+data$artDate= data$artDate %>% as.Date("%Y/%m/%d")
+```
+
+
+### 計算所有字在文集中的總詞頻
+```{r}
+
+word_count <- data %>%
+  select(word,count) %>% 
+  group_by(word) %>% 
+  summarise(count = sum(count))  %>%
+  filter(count>3) %>%  # 過濾出現太少次的字
+  arrange(desc(count))
+
+```
+
+```{r}
+word_count
+```
+
+## 準備LIWC字典
+
+> 全名Linguistic Inquiry and Word Counts，由心理學家Pennebaker於2001出版
+
+
+### 以LIWC字典判斷文集中的word屬於正面字還是負面字
+```{r}
+# 正向字典txt檔
+# 以,將字分隔
+P <- read_file("../dict/liwc/positive.txt")
+
+# 負向字典txt檔
+N <- read_file("../dict/liwc/negative.txt")
+```
+
+```{r}
+#字典txt檔讀進來是一個字串
+typeof(P)
+```
+
+```{r}
+#將字串依,分割
+#strsplit回傳list , 我們取出list中的第一個元素
+P = strsplit(P, ",")[[1]]
+N = strsplit(N, ",")[[1]]
+
+# 建立dataframe 有兩個欄位word,sentiments，word欄位內容是字典向量
+P = data.frame(word = P, sentiment = "positive")
+N = data.frame(word = N, sentiment = "negative")
+```
+
+```{r}
+LIWC = rbind(P, N) #rbind 把兩個column數一樣的dataframe垂直合併在一起
+```
+
+```{r}
+head(LIWC)
+```
+
+
+### 與LIWC情緒字典做join
+
+> 文集中的字出現在LIWC字典中是屬於positive還是negative
+
+```{r}
+word_count %>% inner_join(LIWC)
+data %>% 
+  select(word) %>%
+  inner_join(LIWC)
+
+```
+
+
+
+#以LIWC情緒字典分析
+
+#### 統計每天的文章正面字的次數與負面字的次數
+```{r}
+sentiment_count = data %>%
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count))
+```
+
+```{r}
+sentiment_count %>%
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=sentiment))+
+  scale_x_date(labels = date_format("%m/%d")) 
+```
+疫情是一個負面的議題，可想而見的是負面字頻都是大於正面字頻的
+
+```{r}
+sentiment_count %>%
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=sentiment))+
+  scale_x_date(labels = date_format("%m/%d"))+
+  geom_vline(aes(xintercept = as.numeric(artDate[which(sentiment_count$artDate == as.Date('2020/03/15'))
+[1]])),colour = "red") 
+#geom_vline畫出vertical line，xintercept告訴他要在artDate欄位的哪一個row畫線
+```
+
+> 透過觀察情緒變化來回顧事件內容
+
+```{r}
+data %>% filter(artDate == as.Date('2020/03/15')) %>% distinct(artUrl, .keep_all = TRUE)
+```
+
+```{r}
+data %>% 
+  filter(artDate == as.Date('2020/03/15')) %>% 
+  select(word,count) %>% 
+  group_by(word) %>% 
+  summarise(count = sum(count))  %>%
+  filter(count>20) %>%   # 過濾出現太少次的字
+  wordcloud2()
+```
+沒有篩選內容的文字雲內容太廣泛，並沒有辦法讓我們聚焦在想觀察的事件
+
+
+> 哪篇文章的負面情緒最多？負面情緒的字是？
+
+```{r}
+data %>% 
+  filter(artDate == as.Date('2020/03/15')) %>%
+  inner_join(LIWC) %>% 
+  filter(sentiment == "negative") %>% 
+  group_by(artUrl,sentiment) %>% 
+  summarise(
+    artTitle = artTitle[1],
+    count = n()
+  ) %>% 
+  arrange(desc(count))
+```
+
+
+```{r}
+data %>%
+  filter(artDate == as.Date('2020/03/15')) %>% 
+  inner_join(LIWC) %>%
+  group_by(word,sentiment) %>%
+  summarise(
+    count = n()
+  ) %>% data.frame() %>% 
+  top_n(30,wt = count) %>%
+  ungroup() %>% 
+  mutate(word = reorder(word, count)) %>%
+  ggplot(aes(word, count, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  theme(text=element_text(size=14))+
+  coord_flip()
+```
+
+觀察前後一天的狀況
+```{r}
+data %>% 
+  filter(artDate %in% c(as.Date('2020/03/14'))) %>%
+  inner_join(LIWC) %>% 
+  filter(sentiment == "negative") %>% 
+  group_by(artUrl,sentiment) %>% 
+  summarise(
+    artTitle = artTitle[1],
+    count = n()
+  ) %>% 
+  arrange(desc(count))
+```
+
+```{r}
+data %>% 
+  filter(artDate %in% c(as.Date('2020/03/16'))) %>%
+  inner_join(LIWC) %>% 
+  filter(sentiment == "negative") %>% 
+  group_by(artUrl,sentiment) %>% 
+  summarise(
+    artTitle = artTitle[1],
+    count = n()
+  ) %>% 
+  arrange(desc(count))
+```
+
+
+```{r}
+data %>%
+  filter(artDate == as.Date('2020/03/14')) %>% 
+  inner_join(LIWC) %>%
+  group_by(word,sentiment) %>%
+  summarise(
+    count = n()
+  ) %>% data.frame() %>% 
+  top_n(30,wt = count) %>%
+  ungroup() %>% 
+  mutate(word = reorder(word, count)) %>%
+  ggplot(aes(word, count, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  theme(text=element_text(size=14))+
+  coord_flip()
+```
+
+
+```{r}
+data %>%
+  filter(artDate == as.Date('2020/03/16')) %>% 
+  inner_join(LIWC) %>%
+  group_by(word,sentiment) %>%
+  summarise(
+    count = n()
+  ) %>% data.frame() %>% 
+  top_n(30,wt = count) %>%
+  ungroup() %>% 
+  mutate(word = reorder(word, count)) %>%
+  ggplot(aes(word, count, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  theme(text=element_text(size=14))+
+  coord_flip()
+```
+
+> 隔離、死亡、嚴重等是疫情常見負面字眼，「自私」是15號與前後一天不同的字詞。可觀察到在15號Po文較前後一天特別聚焦在此負面話題。
+
+## 分析各國的情緒
+
+### 國家名字資料集
+```{r}
+country = fread('../data/country.csv',encoding = 'UTF-8')
+colnames(country)[1] = "country"
+```
+
+將臺灣/台灣統一成臺灣，方便後續篩選
+```{r}
+data$word[which(data$word == "台灣")] = "臺灣"
+```
+
+
+將同一篇的斷詞整理在一起
+```{r}
+data_full = data %>% select(artUrl,word) %>% 
+                group_by(artUrl) %>% 
+                summarise(sentence = paste0(word, collapse = " "))
+```
+
+
+### 台灣
+
+> 只選擇文章中指出現指定國名、不出現其他國名的文章。因為如果一篇文章中出現多個國名，目前無法判斷情緒是針對哪個國家
+
+
+```{r}
+# 要排除的國名
+exclude = paste(country$country[country$country != "臺灣"],collapse="|")
+
+# 要
+taiwan = data_full$artUrl[!grepl(exclude, data_full$sentence) & grepl("臺灣", data_full$sentence)]
+```
+
+```{r}
+data %>% filter(artUrl %in% taiwan) %>% 
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count)) %>% 
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=sentiment))+
+  scale_x_date(labels = date_format("%m/%d"))
+```
+
+### 中國
+
+
+```{r}
+exclude = paste(country$country[country$country != "中國"],collapse="|")
+china = data_full$artUrl[!grepl(exclude, data_full$sentence) & grepl("中國", data_full$sentence)]
+```
+
+```{r}
+data %>% filter(artUrl %in% china) %>% 
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count)) %>% 
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=sentiment))+
+  scale_x_date(labels = date_format("%m/%d"))
+```
+
+
+```{r}
+chinaData = data %>% filter(artUrl %in% china) %>% 
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>% 
+  filter(sentiment == "negative") %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count))
+
+#中國在哪一天的負面情緒達到最高
+chinaData$artDate[which.max(chinaData$count[chinaData$sentiment == "negative"])]
+```
+
+```{r}
+data %>% filter(artUrl %in% china) %>% 
+  group_by(artDate,artUrl) %>% 
+  summarise() %>% 
+  group_by(artDate) %>% 
+  summarise(
+    count = n()
+  )
+```
+
+> 中國在2/6的討論篇數並不特別多，有可能是內容文字比較多
+
+### 韓國
+
+```{r}
+exclude = paste(country$country[country$country != "韓國"],collapse="|")
+korea = data_full$artUrl[!grepl(exclude, data_full$sentence) & grepl("韓國", data_full$sentence)]
+```
+
+```{r}
+data %>% filter(artUrl %in% korea) %>% 
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count)) %>% 
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=sentiment))+
+  scale_x_date(labels = date_format("%m/%d"))
+```
+
+```{r}
+koreaData = data %>% filter(artUrl %in% korea) %>% 
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>%
+  filter(sentiment == "negative") %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count))
+
+#韓國在哪一天的負面情緒達到最高
+koreaData$artDate[which.max(koreaData$count[koreaData$sentiment == "negative"])]
+```
+
+> 韓國疫情wiki：https://zh.wikipedia.org/wiki/2019%E5%86%A0%E7%8B%80%E7%97%85%E6%AF%92%E7%97%85%E9%9F%93%E5%9C%8B%E7%96%AB%E6%83%85。自2月25日起，自韓國入境的外籍人士，需進行14天居家檢疫
+
+### 義大利
+
+```{r}
+exclude = paste(country$country[country$country != "義大利"],collapse="|")
+italy = data_full$artUrl[!grepl(exclude, data_full$sentence) & grepl("義大利", data_full$sentence)]
+```
+
+```{r}
+data %>% filter(artUrl %in% italy) %>% 
+  select(artDate,word,count) %>%
+  inner_join(LIWC) %>% 
+  group_by(artDate,sentiment) %>%
+  summarise(count=sum(count)) %>% 
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=sentiment))+
+  scale_x_date(labels = date_format("%m/%d"))
+```
+
+> 義大利在2月討論聲量低，在3月開始疫情爆發
+
+#### 將各國圖形重疊，利於觀察差別
+
+```{r}
+#新增一欄位紀錄國家類別
+data$country = ""
+```
+
+```{r}
+data$country[data$artUrl %in% taiwan] = "taiwan"
+data$country[data$artUrl %in% china] = "china"
+data$country[data$artUrl %in% korea] = "korea"
+data$country[data$artUrl %in% italy] = "italy"
+```
+
+將正負面情緒分開看
+```{r}
+data %>% filter(country != "") %>% 
+  select(artDate,word,count,country) %>%
+  inner_join(LIWC) %>% 
+  filter(sentiment == "positive") %>% 
+  group_by(artDate,sentiment,country) %>%
+  summarise(count=sum(count)) %>% 
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=country))+
+  scale_x_date(labels = date_format("%m/%d"))
+```
+
+
+```{r}
+data %>% filter(country != "") %>% 
+  select(artDate,word,count,country) %>%
+  inner_join(LIWC) %>% 
+  filter(sentiment == "negative") %>% 
+  group_by(artDate,sentiment,country) %>%
+  summarise(count=sum(count)) %>% 
+  ggplot()+
+  geom_line(aes(x=artDate,y=count,colour=country))+
+  scale_x_date(labels = date_format("%m/%d"))
+```
+
+
+
+### 課堂練習
+
+#### 請畫出美國及日本的情緒折線圖，並將他們的正、負面情緒折線圖與各國的圖形重疊
+
